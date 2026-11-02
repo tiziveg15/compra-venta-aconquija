@@ -34,20 +34,29 @@ export async function ensureAccount(authUser){
 }
 export async function loadMarketplace(){
   requireClient()
-  const [storesResult,productsResult,reviewsResult,profilesResult]=await Promise.all([
+  const [storesResult,productsResult,reviewsResult,profilesResult,tripsResult]=await Promise.all([
     supabase.from('stores').select('*').order('created_at',{ascending:false}),
     supabase.from('products').select('*, stores(name, location)').order('created_at',{ascending:false}),
     supabase.from('reviews').select('*').order('created_at',{ascending:false}),
-    supabase.from('profiles').select('id,full_name,avatar_url')
+    supabase.from('profiles').select('id,full_name,avatar_url'),
+    supabase.from('travel_posts').select('*, stores(name)').order('departure_at',{ascending:true})
   ])
-  const stores=throwIfError(storesResult)||[],products=throwIfError(productsResult)||[],reviews=throwIfError(reviewsResult)||[],profiles=throwIfError(profilesResult)||[]
+  const stores=throwIfError(storesResult)||[],products=throwIfError(productsResult)||[],reviews=throwIfError(reviewsResult)||[],profiles=throwIfError(profilesResult)||[],trips=throwIfError(tripsResult)||[]
   const storesById=Object.fromEntries(stores.map(store=>[store.id,store])),profilesById=Object.fromEntries(profiles.map(profile=>[profile.id,profile]))
   return{
     products:products.map(item=>({id:item.id,title:item.title,price:Number(item.price),category:item.category,tags:item.tags||[],seller:item.stores?.name||'Tienda local',seller_id:item.owner_id,store_id:item.store_id,location:item.location||item.stores?.location||'Valles Calchaquíes',description:item.description,image:item.image_url,media:mapMedia(item.media),condition:item.condition,stock:item.stock,shipping:item.shipping,status:item.status})),
+    trips:trips.map(item=>({id:item.id,ownerId:item.owner_id,storeId:item.store_id,seller:item.stores?.name||'Viajero/a',origin:item.origin,destination:item.destination,departureAt:item.departure_at,vehicle:item.vehicle,seatsAvailable:item.seats_available,acceptsPackages:item.accepts_packages,packageDestinations:item.package_destinations||[],pricePerSeat:item.price_per_seat==null?null:Number(item.price_per_seat),contactPhone:item.contact_phone||'',notes:item.notes||'',status:item.status})),
     stores:Object.values(storesById),
-    storeProfiles:Object.fromEntries(stores.map(store=>[store.name,{id:store.id,owner_id:store.owner_id,name:store.name,description:store.description,avatar:store.avatar_url||'',banner:store.banner_url||'',location:store.location}])),
+    storeProfiles:Object.fromEntries(stores.map(store=>[store.name,{id:store.id,owner_id:store.owner_id,name:store.name,description:store.description,avatar:store.avatar_url||'',banner:store.banner_url||'',location:store.location,focus:store.focus||'products'}])),
     reviews:Object.fromEntries(reviews.map(item=>{const profile=profilesById[item.author_id]||{};const mapped={id:item.id,authorId:item.author_id,name:profile.full_name||'Usuario',avatar:profile.avatar_url||'',rating:item.rating,text:item.body,media:mapMedia(item.media),createdAt:item.created_at,edited:item.updated_at!==item.created_at};return[item.product_id?`product:${item.product_id}`:`store:${storesById[item.store_id]?.name||item.store_id}`,[]]}).map(([key])=>[key,reviews.filter(item=>(item.product_id?`product:${item.product_id}`:`store:${storesById[item.store_id]?.name||item.store_id}`)===key).map(item=>{const profile=profilesById[item.author_id]||{};return{id:item.id,authorId:item.author_id,name:profile.full_name||'Usuario',avatar:profile.avatar_url||'',rating:item.rating,text:item.body,media:mapMedia(item.media),createdAt:item.created_at,edited:item.updated_at!==item.created_at}})]))
   }
+}
+
+export async function createTravelPost(trip,user){
+  requireClient();if(!user?.id||!user?.store_id)throw new Error('Iniciá sesión para publicar un viaje.')
+  const row={owner_id:user.id,store_id:user.store_id,origin:trip.origin,destination:trip.destination,departure_at:trip.departureAt,vehicle:trip.vehicle,seats_available:trip.seatsAvailable,accepts_packages:trip.acceptsPackages,package_destinations:trip.packageDestinations,price_per_seat:trip.pricePerSeat===''?null:trip.pricePerSeat,contact_phone:trip.contactPhone,notes:trip.notes,status:'active'}
+  const created=throwIfError(await supabase.from('travel_posts').insert(row).select('*, stores(name)').single())
+  return{id:created.id,ownerId:created.owner_id,storeId:created.store_id,seller:created.stores?.name||user.store_name,origin:created.origin,destination:created.destination,departureAt:created.departure_at,vehicle:created.vehicle,seatsAvailable:created.seats_available,acceptsPackages:created.accepts_packages,packageDestinations:created.package_destinations||[],pricePerSeat:created.price_per_seat==null?null:Number(created.price_per_seat),contactPhone:created.contact_phone||'',notes:created.notes||'',status:created.status}
 }
 
 export async function loadNotifications(userId){
@@ -86,9 +95,10 @@ export async function createProduct(product,user){
 }
 export async function updateProduct(id,patch){requireClient();const row={...patch,updated_at:new Date().toISOString()};const {error}=await supabase.from('products').update(row).eq('id',id);if(error)throw error}
 export async function deleteProduct(id){requireClient();const {error}=await supabase.from('products').delete().eq('id',id);if(error)throw error}
+export async function deleteTravelPost(id){requireClient();const {error}=await supabase.from('travel_posts').delete().eq('id',id);if(error)throw error}
 export async function updateStoreProfile(user,profile){
   requireClient();const avatar=profile.avatarFile?await uploadFile(profile.avatarFile,user.id,'stores'):profile.avatar,banner=profile.bannerFile?await uploadFile(profile.bannerFile,user.id,'stores'):profile.banner
-  const row={owner_id:user.id,name:profile.name||user.store_name,description:profile.description,location:profile.location,avatar_url:avatar||null,banner_url:banner||null,updated_at:new Date().toISOString()}
+  const row={owner_id:user.id,name:profile.name||user.store_name,description:profile.description,location:profile.location,focus:profile.focus||'products',avatar_url:avatar||null,banner_url:banner||null,updated_at:new Date().toISOString()}
   const store=throwIfError(await supabase.from('stores').upsert(row,{onConflict:'owner_id'}).select().single())
   if(profile.avatarFile){const result=await supabase.from('profiles').update({avatar_url:avatar,updated_at:new Date().toISOString()}).eq('id',user.id);if(result.error)throw result.error}
   return{...store,avatar_url:avatar,banner_url:banner}
